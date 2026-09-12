@@ -1,0 +1,47 @@
+# ============================================================================
+# 🍅 番茄钟 Pomodoro Timer —— Flutter 依赖配置（pubspec.yaml）
+# ----------------------------------------------------------------------------
+# 环境要求：Flutter 3.38.1+ / Dart 3.10+
+#   （最低版本由 flutter_local_notifications 22.x 决定，装最新稳定版 Flutter 即可）
+# ============================================================================
+name: pomodoro_app
+description: "自力：自律番茄钟（工作/短休息/长休息 + 自定义时长），含任务管理、自律打卡、专注时长统计（扇形图）、后台计时与震动铃声提醒。"
+publish_to: 'none' # 个人项目，不发布到 pub.dev
+
+version: 1.2.0+3
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 本地持久化：番茄计数 / 自定义时长 / 计时状态（重启 App 数据不丢失）
+  shared_preferences: ^2.5.0
+
+  # 本地通知：后台计时到点提醒（精确闹钟调度，进程被杀也能准时通知）
+  flutter_local_notifications: ^22.0.0
+
+  # 时区数据库：通知调度所需（与 flutter_local_notifications 配套使用）
+  timezone: ^0.11.0
+
+  # 提示音播放：计时结束播放 assets/sounds/ding.wav
+  audioplayers: ^6.8.1
+
+  # 手机震动：计时结束震动提醒
+  vibration: ^3.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # 官方推荐的基础 lint 规则（开发辅助，不影响打包）
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  # 资源清单：计时结束提示音
+  assets:
+    - assets/sounds/
