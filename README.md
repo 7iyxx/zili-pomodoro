@@ -1,5 +1,7 @@
 # 🌱 自力 · 自律番茄钟（Zili Pomodoro）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 一款使用 **Flutter** 开发的 Android「自律向」番茄钟应用：不只是计时器，还有**任务管理、自律打卡、专注时长统计（日 / 周 / 月）**，全部数据保存在本地。UI 遵循 Apple 设计语言，代码含详细中文注释。
 
 <p align="left">
@@ -132,6 +134,8 @@ zili-pomodoro/
 | 构建报 desugaring / JDK 相关错误 | 见 [docs/build-guide.md](docs/build-guide.md) |
 | 想换图标配色 | 修改 `scripts/gen_icon.py` 里的绿色值后重新运行脚本 |
 
-## 📄 说明
+## 📄 License
 
-个人学习作品，代码可自由参考学习。图标与提示音均由仓库内脚本生成（无版权素材）。
+本项目基于 [MIT License](LICENSE) 开源 —— 你可以自由使用、修改、分发（只需保留版权声明）。
+
+图标与提示音均由仓库内脚本生成，无版权素材。
