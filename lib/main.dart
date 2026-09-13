@@ -18,6 +18,11 @@
 //     不再用「总时长 - 剩余时长」估算（旧逻辑在会话基准与总时长不一致时，
 //     会把 40 分钟任务跳过后记成 39 分钟）。现在一律按【实际用时】精确记账。
 //   · 新增「正计时」（自由计时）：不限时长正向计时，结束 / 重置时按实际用时记账。
+//
+// v1.4 更新：
+//   · 任务可选计时方式：新建 / 编辑任务时可选择「倒计时（番茄钟）」或
+//     「正计时（自由计时）」，打开该任务后自动采用对应方式；
+//   · 默认番茄钟也可在计时页右上角的"任务设置"里切换计时方式。
 // -----------------------------------------------------------------------------
 // 代码结构（单文件，按 9 个区块组织，建议配合 IDE 大纲视图阅读）：
 //   【一】模型与工具      —— 任务模型 / 打卡模型 / 调色板 / 时长格式化
@@ -98,7 +103,7 @@ class AppColors {
   static const Color pageBackground = Color(0xFFF5F5F7);
 }
 
-/// 单个任务：名称 + 该任务专属的番茄钟参数
+/// 单个任务：名称 + 该任务专属的番茄钟参数 + 计时方式（倒计时 / 正计时）
 class TaskItem {
   const TaskItem({
     required this.id,
@@ -107,6 +112,7 @@ class TaskItem {
     required this.shortBreakMinutes,
     required this.longBreakMinutes,
     required this.colorIndex,
+    this.countUp = false,
   });
 
   /// 任务唯一 ID（默认任务固定为 '0'）
@@ -115,17 +121,20 @@ class TaskItem {
   /// 任务名称
   final String name;
 
-  /// 工作时长（分钟）
+  /// 工作时长（分钟）——正计时任务不使用该值，但保留配置以便随时切回倒计时
   final int workMinutes;
 
-  /// 短休息时长（分钟）
+  /// 短休息时长（分钟）——正计时任务不使用
   final int shortBreakMinutes;
 
-  /// 长休息时长（分钟）
+  /// 长休息时长（分钟）——正计时任务不使用
   final int longBreakMinutes;
 
   /// 调色板序号（用于统计扇形图配色，稳定不随排序变化）
   final int colorIndex;
+
+  /// 计时方式：false = 倒计时（番茄钟）；true = 正计时（自由计时，不限时长）
+  final bool countUp;
 
   /// 取某个模式对应的时长（分钟）
   int minutesOf(PomodoroMode mode) => switch (mode) {
@@ -135,7 +144,13 @@ class TaskItem {
       };
 
   /// 复制并修改部分字段
-  TaskItem copyWith({String? name, int? workMinutes, int? shortBreakMinutes, int? longBreakMinutes}) {
+  TaskItem copyWith({
+    String? name,
+    int? workMinutes,
+    int? shortBreakMinutes,
+    int? longBreakMinutes,
+    bool? countUp,
+  }) {
     return TaskItem(
       id: id,
       name: name ?? this.name,
@@ -143,6 +158,7 @@ class TaskItem {
       shortBreakMinutes: shortBreakMinutes ?? this.shortBreakMinutes,
       longBreakMinutes: longBreakMinutes ?? this.longBreakMinutes,
       colorIndex: colorIndex,
+      countUp: countUp ?? this.countUp,
     );
   }
 
@@ -154,9 +170,10 @@ class TaskItem {
         'short': shortBreakMinutes,
         'long': longBreakMinutes,
         'color': colorIndex,
+        'countUp': countUp,
       };
 
-  /// 从 JSON 反序列化（容错：缺字段时回退默认值）
+  /// 从 JSON 反序列化（容错：缺字段时回退默认值；旧数据无 countUp 时视为倒计时）
   factory TaskItem.fromJson(Map<String, dynamic> m) => TaskItem(
         id: (m['id'] ?? '') as String,
         name: (m['name'] ?? '未命名任务') as String,
@@ -164,6 +181,7 @@ class TaskItem {
         shortBreakMinutes: ((m['short'] ?? 5) as num).toInt().clamp(1, 180),
         longBreakMinutes: ((m['long'] ?? 15) as num).toInt().clamp(1, 180),
         colorIndex: ((m['color'] ?? 1) as num).toInt(),
+        countUp: (m['countUp'] ?? false) as bool,
       );
 }
 
@@ -263,6 +281,9 @@ class AppStore extends ChangeNotifier {
   int defaultShortMin = 5;
   int defaultLongMin = 15;
 
+  /// 默认番茄钟的计时方式：false = 倒计时（番茄钟），true = 正计时（自由计时）
+  bool defaultCountUp = false;
+
   /// 调色板自增序号（创建任务时递增，保证配色稳定）
   int _colorSeq = 1;
 
@@ -276,6 +297,7 @@ class AppStore extends ChangeNotifier {
     defaultWorkMin = prefs.getInt('work_minutes') ?? 25;
     defaultShortMin = prefs.getInt('short_minutes') ?? 5;
     defaultLongMin = prefs.getInt('long_minutes') ?? 15;
+    defaultCountUp = prefs.getBool('default_count_up') ?? false;
 
     // 任务列表
     final String? tasksRaw = prefs.getString(_kTasks);
@@ -374,6 +396,12 @@ class AppStore extends ChangeNotifier {
     return t?.minutesOf(mode) ?? mode.defaultMinutes;
   }
 
+  /// 当前任务配置的计时方式：true = 正计时（自由计时）
+  bool get activeTaskCountUp {
+    if (activeTaskId == defaultTaskId) return defaultCountUp;
+    return taskById(activeTaskId)?.countUp ?? false;
+  }
+
   /// 打卡项今天是否已打勾
   bool isChecked(String itemId, String day) => checkinRecords[itemId]?.contains(day) ?? false;
 
@@ -404,7 +432,8 @@ class AppStore extends ChangeNotifier {
   // ===================== 任务 CRUD =====================
 
   /// 新建任务（返回创建好的任务对象）
-  Future<TaskItem> addTask(String name, int work, int shortBreak, int longBreak) async {
+  /// [countUp] = true 表示该任务默认使用「正计时（自由计时）」
+  Future<TaskItem> addTask(String name, int work, int shortBreak, int longBreak, {bool countUp = false}) async {
     final TaskItem t = TaskItem(
       id: 't${DateTime.now().millisecondsSinceEpoch}',
       name: name,
@@ -412,6 +441,7 @@ class AppStore extends ChangeNotifier {
       shortBreakMinutes: shortBreak,
       longBreakMinutes: longBreak,
       colorIndex: _colorSeq++,
+      countUp: countUp,
     );
     tasks.add(t);
     await prefs.setInt(_kColorSeq, _colorSeq);
@@ -463,6 +493,20 @@ class AppStore extends ChangeNotifier {
       final TaskItem? t = taskById(activeTaskId);
       if (t != null) {
         await updateTask(t.copyWith(workMinutes: work, shortBreakMinutes: shortBreak, longBreakMinutes: longBreak));
+      }
+    }
+  }
+
+  /// 修改"当前任务"的计时方式（倒计时 / 正计时）
+  Future<void> setActiveCountUp(bool countUp) async {
+    if (activeTaskId == defaultTaskId) {
+      defaultCountUp = countUp;
+      await prefs.setBool('default_count_up', countUp);
+      notifyListeners();
+    } else {
+      final TaskItem? t = taskById(activeTaskId);
+      if (t != null) {
+        await updateTask(t.copyWith(countUp: countUp));
       }
     }
   }
@@ -803,6 +847,10 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
   /// 当前这段"专注时间"记在哪个任务名下（在开始计时那一刻绑定，防止中途切任务记错账）
   String _sessionTaskId = AppStore.defaultTaskId;
 
+  /// 跟踪「当前任务 + 其计时方式设置」的变化（用于自动同步倒计时 / 正计时）
+  String _lastTaskId = '';
+  bool _lastCountUpSetting = false;
+
   // ====================== 生命周期 ======================
 
   @override
@@ -827,9 +875,52 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
   /// 数据仓库变化回调：剩余时长由「总时长 - 已用时长」实时推导，这里只需要刷新界面；
   /// 空闲时如果切了任务，显示也会自动跟随（不会再残留旧任务的剩余时间）。
+  /// 另外负责把「任务配置的计时方式」（倒计时 / 正计时）同步到计时器。
   void _onStoreChanged() {
     if (!mounted) return;
+    _syncModeWithActiveTask();
     setState(() {});
+  }
+
+  /// 把当前任务配置的计时方式同步到计时器：
+  ///   · 任务被切换（含从任务页点启用）→ 先给进行中的会话记账并重置，再采用新任务的计时方式；
+  ///   · 仅计时方式设置被修改（任务编辑弹窗里切换）→ 空闲时才生效，避免打断进行中的会话。
+  void _syncModeWithActiveTask() {
+    final AppStore store = AppStore.instance;
+    final String id = store.activeTaskId;
+    final bool want = store.activeTaskCountUp;
+    final bool taskChanged = id != _lastTaskId;
+    final bool settingChanged = want != _lastCountUpSetting;
+    if (!taskChanged && !settingChanged) return;
+    _lastTaskId = id;
+    _lastCountUpSetting = want;
+
+    if (taskChanged) {
+      // 任务换了：把旧任务的会话时间先记账（按 _sessionTaskId），然后干净重来
+      if (_isRunning || _elapsedMs > 0) {
+        _commitAndClearSession().then((_) {});
+        _ticker?.cancel();
+        _ticker = null;
+        _isRunning = false;
+        _segmentStart = null;
+        _elapsedBaseMs = 0;
+        NotificationService.instance.cancelTimerEnd();
+      }
+      _countUp = want;
+      _saveState();
+      return;
+    }
+
+    // 只是改了计时方式设置
+    if (_isRunning || _elapsedMs > 0) return; // 非空闲：不打断当前会话
+    if (want == _countUp) return;
+    _countUp = want;
+    _ticker?.cancel();
+    _ticker = null;
+    _segmentStart = null;
+    _elapsedBaseMs = 0;
+    NotificationService.instance.cancelTimerEnd();
+    _saveState();
   }
 
   /// App 前后台切换回调
@@ -1270,6 +1361,8 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
       _segmentStart = null;
     }
     _sessionTaskId = store.activeTaskId;
+    _lastTaskId = store.activeTaskId;
+    _lastCountUpSetting = store.activeTaskCountUp;
 
     if (mounted) setState(() => _loading = false);
     _flushPendingNotice();
@@ -1340,7 +1433,9 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
                       store,
                       AppStore.defaultTaskId,
                       AppStore.defaultTaskName,
-                      '${store.defaultWorkMin} / ${store.defaultShortMin} / ${store.defaultLongMin} 分钟',
+                      store.defaultCountUp
+                          ? '正计时（自由计时）'
+                          : '${store.defaultWorkMin} / ${store.defaultShortMin} / ${store.defaultLongMin} 分钟',
                       0,
                     ),
                     for (final TaskItem t in store.tasks)
@@ -1349,7 +1444,9 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
                         store,
                         t.id,
                         t.name,
-                        '${t.workMinutes} / ${t.shortBreakMinutes} / ${t.longBreakMinutes} 分钟',
+                        t.countUp
+                            ? '正计时（自由计时）'
+                            : '${t.workMinutes} / ${t.shortBreakMinutes} / ${t.longBreakMinutes} 分钟',
                         t.colorIndex,
                       ),
                   ],
@@ -1391,29 +1488,71 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     );
   }
 
-  /// 打开"自定义时长"弹窗：编辑【当前任务】的番茄钟参数
+  /// 打开「任务设置」弹窗：编辑【当前任务】的计时方式（倒计时 / 正计时）与三段时长
   Future<void> _openDurationSettings() async {
     final AppStore store = AppStore.instance;
     final Map<PomodoroMode, TextEditingController> controllers = <PomodoroMode, TextEditingController>{
       for (final PomodoroMode m in PomodoroMode.values)
         m: TextEditingController(text: '${store.minutesOf(m)}'),
     };
+    bool countUpChoice = store.activeTaskCountUp; // 弹窗内的临时选择，点"保存"才生效
 
     final bool? saved = await showDialog<bool>(
       context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('自定义时长 · ${store.activeTaskName}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            for (final PomodoroMode m in PomodoroMode.values) _durationField(m, controllers[m]!),
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, StateSetter setLocal) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text('任务设置 · ${store.activeTaskName}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                // ---- 计时方式：倒计时 / 正计时 二选一 ----
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: _ChoicePill(
+                        text: '倒计时',
+                        selected: !countUpChoice,
+                        onTap: () => setLocal(() => countUpChoice = false),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _ChoicePill(
+                        text: '正计时',
+                        selected: countUpChoice,
+                        onTap: () => setLocal(() => countUpChoice = true),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  countUpChoice ? '正计时不限时长，结束时按实际用时记账' : '倒计时使用下面的三段时长（分钟）',
+                  style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
+                ),
+                const SizedBox(height: 12),
+                // ---- 三段时长（正计时任务置灰不可编辑，仅保留配置备用） ----
+                Opacity(
+                  opacity: countUpChoice ? 0.35 : 1,
+                  child: IgnorePointer(
+                    ignoring: countUpChoice,
+                    child: Column(
+                      children: <Widget>[
+                        for (final PomodoroMode m in PomodoroMode.values) _durationField(m, controllers[m]!),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('保存')),
           ],
         ),
-        actions: <Widget>[
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('保存')),
-        ],
       ),
     );
 
@@ -1434,20 +1573,25 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
       return v;
     }
 
-    await _commitAndClearSession(); // 时长变更前：已用时间先记账，再从 0 开始
+    await _commitAndClearSession(); // 变更前：已用时间先记账，再从 0 开始
+    await store.setActiveCountUp(countUpChoice);
     await store.setActiveDurations(
       work: parse(raw[PomodoroMode.work]!, store.minutesOf(PomodoroMode.work)),
       shortBreak: parse(raw[PomodoroMode.shortBreak]!, store.minutesOf(PomodoroMode.shortBreak)),
       longBreak: parse(raw[PomodoroMode.longBreak]!, store.minutesOf(PomodoroMode.longBreak)),
     );
+    if (!mounted) return;
     setState(() {
-      // 时长变更后停止当前计时并重置，避免"剩余时间 > 总时长"的错乱
+      // 变更后停止当前计时并回到干净状态（新的计时方式 / 时长立即生效）
       _ticker?.cancel();
       _ticker = null;
       _isRunning = false;
       _segmentStart = null;
       _elapsedBaseMs = 0;
+      _countUp = countUpChoice;
     });
+    _lastTaskId = store.activeTaskId;
+    _lastCountUpSetting = countUpChoice;
     await NotificationService.instance.cancelTimerEnd();
     await _saveState();
   }
@@ -1510,7 +1654,7 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
             _PageHeader(
               title: '自力',
               trailing: IconButton(
-                tooltip: '自定义时长（当前任务）',
+                tooltip: '任务设置（时长 / 计时方式）',
                 onPressed: _openDurationSettings,
                 icon: const Icon(Icons.tune_rounded, color: AppColors.secondaryLabel),
               ),
@@ -1717,7 +1861,9 @@ class TasksPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 5),
                     Text(
-                      '工作 ${t.workMinutes}分 · 短休 ${t.shortBreakMinutes}分 · 长休 ${t.longBreakMinutes}分',
+                      t.countUp
+                          ? '正计时（自由计时）· 不限时长'
+                          : '工作 ${t.workMinutes}分 · 短休 ${t.shortBreakMinutes}分 · 长休 ${t.longBreakMinutes}分',
                       style: const TextStyle(fontSize: 12.5, color: AppColors.secondaryLabel),
                     ),
                     if (secs > 0) ...<Widget>[
@@ -1750,42 +1896,84 @@ class TasksPage extends StatelessWidget {
     );
   }
 
-  /// 新建 / 编辑任务弹窗（名称 + 三个时长）
+  /// 新建 / 编辑任务弹窗（名称 + 计时方式 + 三段时长）
   Future<void> _showTaskEditor(BuildContext context, TaskItem? task) async {
     final AppStore store = AppStore.instance;
     final TextEditingController nameCtrl = TextEditingController(text: task?.name ?? '');
     final TextEditingController workCtrl = TextEditingController(text: '${task?.workMinutes ?? 25}');
     final TextEditingController shortCtrl = TextEditingController(text: '${task?.shortBreakMinutes ?? 5}');
     final TextEditingController longCtrl = TextEditingController(text: '${task?.longBreakMinutes ?? 15}');
+    bool countUpChoice = task?.countUp ?? false; // 计时方式：false = 倒计时，true = 正计时
 
     final bool? ok = await showDialog<bool>(
       context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text(task == null ? '新建任务' : '编辑任务'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              TextField(
-                controller: nameCtrl,
-                decoration: InputDecoration(
-                  labelText: '任务名称',
-                  hintText: '例如：复习信号与系统',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, StateSetter setLocal) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text(task == null ? '新建任务' : '编辑任务'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                TextField(
+                  controller: nameCtrl,
+                  decoration: InputDecoration(
+                    labelText: '任务名称',
+                    hintText: '例如：复习信号与系统',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 14),
-              _minuteRow('工作', workCtrl),
-              _minuteRow('短休息', shortCtrl),
-              _minuteRow('长休息', longCtrl),
-            ],
+                const SizedBox(height: 14),
+                // ---- 计时方式：倒计时（番茄钟） / 正计时（自由计时） ----
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: _ChoicePill(
+                        text: '倒计时',
+                        selected: !countUpChoice,
+                        onTap: () => setLocal(() => countUpChoice = false),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _ChoicePill(
+                        text: '正计时',
+                        selected: countUpChoice,
+                        onTap: () => setLocal(() => countUpChoice = true),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  countUpChoice
+                      ? '正计时不限时长：打开该任务后正着数，结束时按实际用时记账'
+                      : '倒计时使用下面的三段时长（分钟）',
+                  style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
+                ),
+                const SizedBox(height: 12),
+                // ---- 三段时长（正计时任务置灰不可编辑，仅保留配置备用） ----
+                Opacity(
+                  opacity: countUpChoice ? 0.35 : 1,
+                  child: IgnorePointer(
+                    ignoring: countUpChoice,
+                    child: Column(
+                      children: <Widget>[
+                        _minuteRow('工作', workCtrl),
+                        _minuteRow('短休息', shortCtrl),
+                        _minuteRow('长休息', longCtrl),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
+          actions: <Widget>[
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('保存')),
+          ],
         ),
-        actions: <Widget>[
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('保存')),
-        ],
       ),
     );
 
@@ -1812,7 +2000,7 @@ class TasksPage extends StatelessWidget {
     final int longBreak = parseMin(rawLong, 15);
 
     if (task == null) {
-      final TaskItem created = await store.addTask(name, work, shortBreak, longBreak);
+      final TaskItem created = await store.addTask(name, work, shortBreak, longBreak, countUp: countUpChoice);
       await store.setActiveTask(created.id); // 新建后自动启用，直接就能用
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1825,6 +2013,7 @@ class TasksPage extends StatelessWidget {
         workMinutes: work,
         shortBreakMinutes: shortBreak,
         longBreakMinutes: longBreak,
+        countUp: countUpChoice,
       ));
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2679,6 +2868,49 @@ class _StatsBar extends StatelessWidget {
           style: const TextStyle(fontSize: 14, color: AppColors.secondaryLabel),
         ),
       ],
+    );
+  }
+}
+
+/// 小胶囊选择按钮（Apple 风格）：用于"倒计时 / 正计时"二选一
+class _ChoicePill extends StatelessWidget {
+  const _ChoicePill({required this.text, required this.selected, required this.onTap});
+
+  /// 按钮文字
+  final String text;
+
+  /// 是否选中
+  final bool selected;
+
+  /// 点击回调
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent.withValues(alpha: 0.14) : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: selected ? AppColors.accent : Colors.transparent,
+            width: 1.2,
+          ),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 13.5,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            color: selected ? AppColors.accent : AppColors.secondaryLabel,
+          ),
+        ),
+      ),
     );
   }
 }
