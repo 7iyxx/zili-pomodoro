@@ -57,7 +57,7 @@
 **APK 下载**（推荐 Releases）：
 
 - 最新版本：<https://github.com/7iyxx/zili-pomodoro/releases/latest>
-- 直链：<https://github.com/7iyxx/zili-pomodoro/releases/latest/download/zili-v1.4.3.apk>
+- 直链：<https://github.com/7iyxx/zili-pomodoro/releases/latest/download/zili-v1.4.4.apk>
 
 **安装步骤**
 
@@ -138,6 +138,7 @@ zili-pomodoro/
 
 ## 📝 更新日志
 
+- **v1.4.4** — 任务卡片尺寸统一：「累计专注」行改为恒定显示（无记录显示灰色 0分钟），任务名限单行
 - **v1.4.3** — 修复切换「倒计时 / 正计时」时弹窗变高：提示区固定两行高度，两种状态占位一致（真机实测切换前后高度差 0px）
 - **v1.4.2** — 修复弹窗布局：卡片现在会收缩到内容大小并垂直居中（此前会被拉伸成整屏高度，表现为下方大片留白）
 - **v1.4.1** — 统一弹窗视觉：新建任务 / 任务设置 / 添加打卡项改为应用同风格纯白卡片弹窗，计时方式改用主界面同款分段控件

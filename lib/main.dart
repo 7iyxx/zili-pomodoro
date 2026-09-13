@@ -37,6 +37,11 @@
 // v1.4.3 修复：
 //   · 切换「倒计时 / 正计时」时弹窗垂直尺寸跳动——正计时提示文案较长会折成两行，
 //     现将提示区固定为两行高度，两种状态占位一致；灰化切换同步改为平滑过渡。
+//
+// v1.4.4 修复：
+//   · 任务卡片尺寸统一——"累计专注"行改为恒定显示（无记录时为灰色 0分钟），
+//     任务名限制单行，所有卡片保持相同的三行结构。
+
 
 
 
@@ -1850,6 +1855,7 @@ class TasksPage extends StatelessWidget {
                         Flexible(
                           child: Text(
                             t.name,
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.label),
                           ),
@@ -1875,11 +1881,17 @@ class TasksPage extends StatelessWidget {
                           : '工作 ${t.workMinutes}分 · 短休 ${t.shortBreakMinutes}分 · 长休 ${t.longBreakMinutes}分',
                       style: const TextStyle(fontSize: 12.5, color: AppColors.secondaryLabel),
                     ),
-                    if (secs > 0) ...<Widget>[
-                      const SizedBox(height: 3),
-                      Text('累计专注 ${formatDuration(secs)}',
-                          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: color)),
-                    ],
+                    // 恒定显示"累计专注"行：有记录显示彩色时长，无记录显示灰色 0分钟
+                    // —— 保证每张卡片都是"名称 + 说明 + 专注时长"三行结构，尺寸完全一致
+                    const SizedBox(height: 3),
+                    Text(
+                      '累计专注 ${formatDuration(secs)}',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: secs > 0 ? FontWeight.w500 : FontWeight.w400,
+                        color: secs > 0 ? color : AppColors.secondaryLabel,
+                      ),
+                    ),
                   ],
                 ),
               ),
