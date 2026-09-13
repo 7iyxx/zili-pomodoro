@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-一款使用 **Flutter** 开发的 Android「自律向」番茄钟应用：不只是计时器，还有**任务管理、自律打卡、专注时长统计（日 / 周 / 月）**，全部数据保存在本地。UI 遵循 Apple 设计语言，代码含详细中文注释。
+一款使用 **Flutter** 开发的 Android「自律向」番茄钟应用：不只是计时器，还有**任务管理、自律打卡、专注时长统计（日 / 周 / 月）**，全部数据保存在本地。
 
 <p align="left">
   <img src="screenshots/01-timer.png" width="212" />
