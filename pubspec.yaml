@@ -8,7 +8,7 @@ name: pomodoro_app
 description: "自力：自律番茄钟（工作/短休息/长休息 + 自定义时长），含任务管理、自律打卡、专注时长统计（扇形图）、后台计时与震动铃声提醒。"
 publish_to: 'none' # 个人项目，不发布到 pub.dev
 
-version: 1.4.0+5
+version: 1.4.1+6
 
 environment:
   sdk: ^3.10.0

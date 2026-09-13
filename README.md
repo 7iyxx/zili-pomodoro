@@ -57,7 +57,7 @@
 **APK 下载**（推荐 Releases）：
 
 - 最新版本：<https://github.com/7iyxx/zili-pomodoro/releases/latest>
-- 直链：<https://github.com/7iyxx/zili-pomodoro/releases/latest/download/zili-v1.4.0.apk>
+- 直链：<https://github.com/7iyxx/zili-pomodoro/releases/latest/download/zili-v1.4.1.apk>
 
 **安装步骤**
 
@@ -138,6 +138,7 @@ zili-pomodoro/
 
 ## 📝 更新日志
 
+- **v1.4.1** — 统一弹窗视觉：新建任务 / 任务设置 / 添加打卡项改为应用同风格纯白卡片弹窗，计时方式改用主界面同款分段控件
 - **v1.4.0** — 任务可单独设置计时方式（倒计时 / 正计时），打开任务自动采用；默认番茄钟也可在计时页「任务设置」里切换
 - **v1.3.0** — 新增「正计时」（自由计时）；统计记账改为**秒表式精确累计**，修复中途跳过导致统计时长虚高的问题
 - **v1.2.0** — 统计支持按天存档与日 / 周 / 月历史聚合

@@ -23,6 +23,12 @@
 //   · 任务可选计时方式：新建 / 编辑任务时可选择「倒计时（番茄钟）」或
 //     「正计时（自由计时）」，打开该任务后自动采用对应方式；
 //   · 默认番茄钟也可在计时页右上角的"任务设置"里切换计时方式。
+//
+// v1.4.1 更新：
+//   · 统一弹窗视觉：新建任务 / 任务设置 / 添加打卡项全部改为应用统一风格的纯白卡片弹窗
+//     （大圆角、柔和阴影、居中标题、等宽按钮），输入框统一为 iOS 灰填充圆角样式；
+//   · 「倒计时 / 正计时」改为与主界面模式栏同款的分段控件，两个选项天然等宽等高。
+
 // -----------------------------------------------------------------------------
 // 代码结构（单文件，按 9 个区块组织，建议配合 IDE 大纲视图阅读）：
 //   【一】模型与工具      —— 任务模型 / 打卡模型 / 调色板 / 时长格式化
@@ -1499,41 +1505,33 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
     final bool? saved = await showDialog<bool>(
       context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
       builder: (BuildContext ctx) => StatefulBuilder(
-        builder: (BuildContext ctx, StateSetter setLocal) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Text('任务设置 · ${store.activeTaskName}'),
-          content: SingleChildScrollView(
+        builder: (BuildContext ctx, StateSetter setLocal) => _AppDialogCard(
+          title: '任务设置 · ${store.activeTaskName}',
+          actions: <Widget>[
+            _DialogButton(text: '取消', onTap: () => Navigator.of(ctx).pop(false)),
+            _DialogButton(text: '保存', primary: true, onTap: () => Navigator.of(ctx).pop(true)),
+          ],
+          child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                // ---- 计时方式：倒计时 / 正计时 二选一 ----
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: _ChoicePill(
-                        text: '倒计时',
-                        selected: !countUpChoice,
-                        onTap: () => setLocal(() => countUpChoice = false),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _ChoicePill(
-                        text: '正计时',
-                        selected: countUpChoice,
-                        onTap: () => setLocal(() => countUpChoice = true),
-                      ),
-                    ),
-                  ],
+                // 计时方式：倒计时 / 正计时（与主界面模式栏同款分段控件）
+                _ChoiceSegment(
+                  options: const <String>['倒计时', '正计时'],
+                  selectedIndex: countUpChoice ? 1 : 0,
+                  onChanged: (int i) => setLocal(() => countUpChoice = i == 1),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
                 Text(
                   countUpChoice ? '正计时不限时长，结束时按实际用时记账' : '倒计时使用下面的三段时长（分钟）',
+                  textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
                 ),
-                const SizedBox(height: 12),
-                // ---- 三段时长（正计时任务置灰不可编辑，仅保留配置备用） ----
+                const SizedBox(height: 14),
+                // 三段时长（正计时任务置灰不可编辑，仅保留配置备用）
                 Opacity(
                   opacity: countUpChoice ? 0.35 : 1,
                   child: IgnorePointer(
@@ -1548,10 +1546,6 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
               ],
             ),
           ),
-          actions: <Widget>[
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('保存')),
-          ],
         ),
       ),
     );
@@ -1609,16 +1603,11 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
           ),
           SizedBox(
             width: 96,
-            child: TextField(
+            child: _IOSField(
               controller: controller,
-              keyboardType: TextInputType.number,
+              suffixText: '分',
               textAlign: TextAlign.center,
-              decoration: InputDecoration(
-                isDense: true,
-                suffixText: '分',
-                contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
+              keyboardType: TextInputType.number,
             ),
           ),
         ],
@@ -1896,7 +1885,7 @@ class TasksPage extends StatelessWidget {
     );
   }
 
-  /// 新建 / 编辑任务弹窗（名称 + 计时方式 + 三段时长）
+  /// 新建 / 编辑任务弹窗（名称 + 计时方式 + 三段时长；应用统一弹窗风格）
   Future<void> _showTaskEditor(BuildContext context, TaskItem? task) async {
     final AppStore store = AppStore.instance;
     final TextEditingController nameCtrl = TextEditingController(text: task?.name ?? '');
@@ -1907,52 +1896,38 @@ class TasksPage extends StatelessWidget {
 
     final bool? ok = await showDialog<bool>(
       context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
       builder: (BuildContext ctx) => StatefulBuilder(
-        builder: (BuildContext ctx, StateSetter setLocal) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Text(task == null ? '新建任务' : '编辑任务'),
-          content: SingleChildScrollView(
+        builder: (BuildContext ctx, StateSetter setLocal) => _AppDialogCard(
+          title: task == null ? '新建任务' : '编辑任务',
+          actions: <Widget>[
+            _DialogButton(text: '取消', onTap: () => Navigator.of(ctx).pop(false)),
+            _DialogButton(text: '保存', primary: true, onTap: () => Navigator.of(ctx).pop(true)),
+          ],
+          child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                TextField(
-                  controller: nameCtrl,
-                  decoration: InputDecoration(
-                    labelText: '任务名称',
-                    hintText: '例如：复习信号与系统',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+                // 任务名称
+                _IOSField(controller: nameCtrl, hintText: '任务名称，例如：复习信号与系统'),
+                const SizedBox(height: 16),
+                // 计时方式：倒计时 / 正计时（与主界面模式栏同款分段控件）
+                _ChoiceSegment(
+                  options: const <String>['倒计时', '正计时'],
+                  selectedIndex: countUpChoice ? 1 : 0,
+                  onChanged: (int i) => setLocal(() => countUpChoice = i == 1),
                 ),
-                const SizedBox(height: 14),
-                // ---- 计时方式：倒计时（番茄钟） / 正计时（自由计时） ----
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: _ChoicePill(
-                        text: '倒计时',
-                        selected: !countUpChoice,
-                        onTap: () => setLocal(() => countUpChoice = false),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _ChoicePill(
-                        text: '正计时',
-                        selected: countUpChoice,
-                        onTap: () => setLocal(() => countUpChoice = true),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
                 Text(
                   countUpChoice
                       ? '正计时不限时长：打开该任务后正着数，结束时按实际用时记账'
                       : '倒计时使用下面的三段时长（分钟）',
+                  textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
                 ),
-                const SizedBox(height: 12),
-                // ---- 三段时长（正计时任务置灰不可编辑，仅保留配置备用） ----
+                const SizedBox(height: 14),
+                // 三段时长（正计时任务置灰不可编辑，仅保留配置备用）
                 Opacity(
                   opacity: countUpChoice ? 0.35 : 1,
                   child: IgnorePointer(
@@ -1969,10 +1944,6 @@ class TasksPage extends StatelessWidget {
               ],
             ),
           ),
-          actions: <Widget>[
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('保存')),
-          ],
         ),
       ),
     );
@@ -2034,16 +2005,11 @@ class TasksPage extends StatelessWidget {
             child: Text(label, style: const TextStyle(fontSize: 14, color: AppColors.label)),
           ),
           Expanded(
-            child: TextField(
+            child: _IOSField(
               controller: controller,
-              keyboardType: TextInputType.number,
+              suffixText: '分',
               textAlign: TextAlign.center,
-              decoration: InputDecoration(
-                isDense: true,
-                suffixText: '分',
-                contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
+              keyboardType: TextInputType.number,
             ),
           ),
         ],
@@ -2242,28 +2208,24 @@ class CheckInPage extends StatelessWidget {
     );
   }
 
-  /// 添加打卡项
+  /// 添加打卡项（应用统一弹窗风格）
   Future<void> _showAddDialog(BuildContext context) async {
     final AppStore store = AppStore.instance;
     final TextEditingController nameCtrl = TextEditingController();
     final bool? ok = await showDialog<bool>(
       context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('添加打卡项'),
-        content: TextField(
-          controller: nameCtrl,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: '打卡项名称',
-            hintText: '例如：早起 7 点',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-        ),
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      builder: (BuildContext ctx) => _AppDialogCard(
+        title: '添加打卡项',
         actions: <Widget>[
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('添加')),
+          _DialogButton(text: '取消', onTap: () => Navigator.of(ctx).pop(false)),
+          _DialogButton(text: '添加', primary: true, onTap: () => Navigator.of(ctx).pop(true)),
         ],
+        child: _IOSField(
+          controller: nameCtrl,
+          hintText: '打卡项名称，例如：早起 7 点',
+          autofocus: true,
+        ),
       ),
     );
     final String name = nameCtrl.text.trim();
@@ -2872,44 +2834,206 @@ class _StatsBar extends StatelessWidget {
   }
 }
 
-/// 小胶囊选择按钮（Apple 风格）：用于"倒计时 / 正计时"二选一
-class _ChoicePill extends StatelessWidget {
-  const _ChoicePill({required this.text, required this.selected, required this.onTap});
+/// 应用统一弹窗卡片（与主界面同风格）：纯白圆角卡片 + 柔和阴影 + 居中标题 + 底部等宽按钮行
+class _AppDialogCard extends StatelessWidget {
+  const _AppDialogCard({required this.title, required this.child, required this.actions});
 
-  /// 按钮文字
+  /// 标题（居中，iOS 弹窗样式）
+  final String title;
+
+  /// 弹窗内容
+  final Widget child;
+
+  /// 底部按钮（一般为两个：取消 / 确认），等宽排布
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 34),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: <BoxShadow>[
+          BoxShadow(color: Colors.black.withValues(alpha: 0.16), blurRadius: 36, offset: const Offset(0, 14)),
+        ],
+      ),
+      child: Material(
+        // 纯白：绕开 Material 3 的表面着色（偏绿灰），与主界面卡片颜色一致
+        color: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 22, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: AppColors.label),
+              ),
+              const SizedBox(height: 18),
+              child,
+              const SizedBox(height: 20),
+              Row(
+                children: <Widget>[
+                  for (int i = 0; i < actions.length; i++) ...<Widget>[
+                    if (i > 0) const SizedBox(width: 10),
+                    Expanded(child: actions[i]),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 弹窗底部按钮：主按钮（绿底白字）/ 次按钮（浅灰底深色字），与主界面的圆角按钮语言一致
+class _DialogButton extends StatelessWidget {
+  const _DialogButton({required this.text, required this.onTap, this.primary = false});
+
   final String text;
-
-  /// 是否选中
-  final bool selected;
-
-  /// 点击回调
   final VoidCallback onTap;
+
+  /// true = 主按钮（绿色填充）
+  final bool primary;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-        padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Container(
+        height: 46,
         decoration: BoxDecoration(
-          color: selected ? AppColors.accent.withValues(alpha: 0.14) : Colors.black.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: selected ? AppColors.accent : Colors.transparent,
-            width: 1.2,
-          ),
+          color: primary ? AppColors.accent : const Color(0xFFF2F2F7),
+          borderRadius: BorderRadius.circular(12),
         ),
         alignment: Alignment.center,
         child: Text(
           text,
           style: TextStyle(
-            fontSize: 13.5,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-            color: selected ? AppColors.accent : AppColors.secondaryLabel,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: primary ? Colors.white : AppColors.label,
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// iOS 风格输入框：浅灰填充、无边框、圆角 10（弹窗表单统一使用）
+class _IOSField extends StatelessWidget {
+  const _IOSField({
+    required this.controller,
+    this.hintText,
+    this.suffixText,
+    this.textAlign = TextAlign.left,
+    this.keyboardType,
+    this.autofocus = false,
+  });
+
+  final TextEditingController controller;
+  final String? hintText;
+  final String? suffixText;
+  final TextAlign textAlign;
+  final TextInputType? keyboardType;
+  final bool autofocus;
+
+  @override
+  Widget build(BuildContext context) {
+    OutlineInputBorder noneBorder() => OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide.none,
+        );
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      textAlign: textAlign,
+      autofocus: autofocus,
+      style: const TextStyle(fontSize: 15, color: AppColors.label),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: hintText,
+        hintStyle: const TextStyle(color: AppColors.secondaryLabel, fontSize: 14),
+        suffixText: suffixText,
+        suffixStyle: const TextStyle(color: AppColors.secondaryLabel, fontSize: 14),
+        filled: true,
+        fillColor: const Color(0xFFF2F2F7),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        border: noneBorder(),
+        enabledBorder: noneBorder(),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.accent, width: 1.4),
+        ),
+      ),
+    );
+  }
+}
+
+/// 两段式分段控件（与主界面计时模式栏同款）：灰底容器 + 选中项白底浮起。
+/// 两个选项在同一个容器里等宽排布，天然不会出现大小不一致。
+class _ChoiceSegment extends StatelessWidget {
+  const _ChoiceSegment({required this.options, required this.selectedIndex, required this.onChanged});
+
+  /// 选项文字（两个）
+  final List<String> options;
+
+  /// 当前选中下标
+  final int selectedIndex;
+
+  /// 切换回调（返回新的下标）
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(11),
+      ),
+      child: Row(
+        children: <Widget>[
+          for (int i = 0; i < options.length; i++)
+            Expanded(
+              child: GestureDetector(
+                onTap: () => onChanged(i),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  decoration: BoxDecoration(
+                    color: i == selectedIndex ? Colors.white : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8.5),
+                    boxShadow: i == selectedIndex
+                        ? <BoxShadow>[
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.08),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ]
+                        : null,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    options[i],
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: i == selectedIndex ? FontWeight.w600 : FontWeight.w500,
+                      color: i == selectedIndex ? AppColors.accent : AppColors.secondaryLabel,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
