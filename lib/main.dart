@@ -28,6 +28,12 @@
 //   · 统一弹窗视觉：新建任务 / 任务设置 / 添加打卡项全部改为应用统一风格的纯白卡片弹窗
 //     （大圆角、柔和阴影、居中标题、等宽按钮），输入框统一为 iOS 灰填充圆角样式；
 //   · 「倒计时 / 正计时」改为与主界面模式栏同款的分段控件，两个选项天然等宽等高。
+//
+// v1.4.2 修复：
+//   · 弹窗布局 Bug：自定义卡片缺少「居中 + 收缩」容器，会被拉伸为整屏白板
+//     （表现为弹窗下方大片留白）——改用 Material Dialog 作为外层容器，
+//     自动垂直居中、收缩到内容大小、并在键盘弹出时避让。
+
 
 // -----------------------------------------------------------------------------
 // 代码结构（单文件，按 9 个区块组织，建议配合 IDE 大纲视图阅读）：
@@ -1507,7 +1513,7 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       builder: (BuildContext ctx) => StatefulBuilder(
-        builder: (BuildContext ctx, StateSetter setLocal) => _AppDialogCard(
+        builder: (BuildContext ctx, StateSetter setLocal) => AppDialogCard(
           title: '任务设置 · ${store.activeTaskName}',
           actions: <Widget>[
             _DialogButton(text: '取消', onTap: () => Navigator.of(ctx).pop(false)),
@@ -1898,7 +1904,7 @@ class TasksPage extends StatelessWidget {
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       builder: (BuildContext ctx) => StatefulBuilder(
-        builder: (BuildContext ctx, StateSetter setLocal) => _AppDialogCard(
+        builder: (BuildContext ctx, StateSetter setLocal) => AppDialogCard(
           title: task == null ? '新建任务' : '编辑任务',
           actions: <Widget>[
             _DialogButton(text: '取消', onTap: () => Navigator.of(ctx).pop(false)),
@@ -2215,7 +2221,7 @@ class CheckInPage extends StatelessWidget {
     final bool? ok = await showDialog<bool>(
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (BuildContext ctx) => _AppDialogCard(
+      builder: (BuildContext ctx) => AppDialogCard(
         title: '添加打卡项',
         actions: <Widget>[
           _DialogButton(text: '取消', onTap: () => Navigator.of(ctx).pop(false)),
@@ -2834,14 +2840,18 @@ class _StatsBar extends StatelessWidget {
   }
 }
 
-/// 应用统一弹窗卡片（与主界面同风格）：纯白圆角卡片 + 柔和阴影 + 居中标题 + 底部等宽按钮行
-class _AppDialogCard extends StatelessWidget {
-  const _AppDialogCard({required this.title, required this.child, required this.actions});
+/// 应用统一弹窗卡片（与主界面同风格）：纯白圆角卡片 + 柔和阴影 + 居中标题 + 底部等宽按钮行。
+///
+/// 关键：外层使用 Material 的 [Dialog] —— 它自带「垂直居中 + 收缩到内容大小 +
+/// 键盘避让（viewInsets）」的标准能力；如果直接把自定义卡片塞给 showDialog，
+/// 卡片会被拉伸成整屏高度（之前下方大片留白就是这个原因）。
+class AppDialogCard extends StatelessWidget {
+  const AppDialogCard({super.key, required this.title, required this.child, required this.actions});
 
   /// 标题（居中，iOS 弹窗样式）
   final String title;
 
-  /// 弹窗内容
+  /// 弹窗内容（内部如需滚动，请自行包 SingleChildScrollView，这里会弹性适配）
   final Widget child;
 
   /// 底部按钮（一般为两个：取消 / 确认），等宽排布
@@ -2849,43 +2859,40 @@ class _AppDialogCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 34),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: <BoxShadow>[
-          BoxShadow(color: Colors.black.withValues(alpha: 0.16), blurRadius: 36, offset: const Offset(0, 14)),
-        ],
-      ),
-      child: Material(
-        // 纯白：绕开 Material 3 的表面着色（偏绿灰），与主界面卡片颜色一致
-        color: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        clipBehavior: Clip.antiAlias,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 22, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: AppColors.label),
-              ),
-              const SizedBox(height: 18),
-              child,
-              const SizedBox(height: 20),
-              Row(
-                children: <Widget>[
-                  for (int i = 0; i < actions.length; i++) ...<Widget>[
-                    if (i > 0) const SizedBox(width: 10),
-                    Expanded(child: actions[i]),
-                  ],
+    return Dialog(
+      // 纯白：绕开 Material 3 的表面着色（偏绿灰），与主界面卡片颜色一致
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      elevation: 8,
+      shadowColor: Colors.black.withValues(alpha: 0.2),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      clipBehavior: Clip.antiAlias,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 34, vertical: 48),
+      child: Padding(
+        key: const ValueKey<String>('app_dialog_card_body'),
+        padding: const EdgeInsets.fromLTRB(20, 22, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: AppColors.label),
+            ),
+            const SizedBox(height: 18),
+            // 弹性适配：内容矮时收缩到内容高度；内容超高时在剩余空间内滚动
+            Flexible(child: child),
+            const SizedBox(height: 20),
+            Row(
+              children: <Widget>[
+                for (int i = 0; i < actions.length; i++) ...<Widget>[
+                  if (i > 0) const SizedBox(width: 10),
+                  Expanded(child: actions[i]),
                 ],
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ),
       ),
     );
