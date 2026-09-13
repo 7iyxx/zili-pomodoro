@@ -12,6 +12,12 @@
 //   ③ 时间统计模块  —— 每个任务的累计专注时长，扇形图 + 图下明细标注
 //   ④ 全新 App 图标 —— 绿色渐变 + 白色圆环对勾（见 res/ 与 scripts/gen_icon.py）
 //   ⑤ 底部导航栏    —— 计时 / 任务 / 打卡 / 统计，四个页面像微信一样切换
+//
+// v1.3 修复 / 新增：
+//   · 修复统计时长虚高：记账改为「秒表式累计」——已用时间由累计器直接推导，
+//     不再用「总时长 - 剩余时长」估算（旧逻辑在会话基准与总时长不一致时，
+//     会把 40 分钟任务跳过后记成 39 分钟）。现在一律按【实际用时】精确记账。
+//   · 新增「正计时」（自由计时）：不限时长正向计时，结束 / 重置时按实际用时记账。
 // -----------------------------------------------------------------------------
 // 代码结构（单文件，按 9 个区块组织，建议配合 IDE 大纲视图阅读）：
 //   【一】模型与工具      —— 任务模型 / 打卡模型 / 调色板 / 时长格式化
@@ -770,12 +776,13 @@ class PomodoroPage extends StatefulWidget {
 }
 
 class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver {
-  // ---------- 本地存储的键名（计时器自身的状态，与任务数据分开存） ----------
+  // ---------- 本地存储的键名（计时器自身状态） ----------
   static const String _kCompletedCount = 'completed_pomodoros'; // 累计完成的番茄数
-  static const String _kMode = 'saved_mode'; // 上次所在模式
+  static const String _kMode = 'saved_mode'; // 上次所在的倒计时模式
+  static const String _kCountUp = 'saved_count_up'; // 上次是否为正计时
   static const String _kRunning = 'saved_running'; // 上次退出时是否运行中
-  static const String _kEndMs = 'saved_end_ms'; // 运行中的结束时间戳（毫秒）
-  static const String _kRemainingMs = 'saved_remaining_ms'; // 暂停时剩余毫秒
+  static const String _kSegmentStart = 'saved_segment_start_ms'; // 当前运行片段的起点（毫秒时间戳）
+  static const String _kElapsedBase = 'saved_elapsed_base_ms'; // 已累计的专注毫秒（不含当前片段）
   static const String _kPermissionAsked = 'permission_asked'; // 是否已申请过系统权限
 
   // ---------- 基础设施 ----------
@@ -784,13 +791,17 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
   // ---------- 运行时状态 ----------
   bool _loading = true; // 首次进入时先读取本地数据，避免画面闪烁
-  PomodoroMode _mode = PomodoroMode.work; // 当前模式
-  bool _isRunning = false; // 是否正在倒计时
-  DateTime? _endTime; // 运行中的"结束时刻"（绝对时间，倒计时的唯一事实来源）
-  int _remainingMs = 25 * 60 * 1000; // 剩余毫秒（暂停/未开始时的值）
-  int _completedCount = 0; // 累计完成的番茄数（全局）
-  Timer? _ticker; // UI 刷新定时器（每 250ms 刷新数字与圆环）
+  PomodoroMode _mode = PomodoroMode.work; // 当前倒计时模式
+  bool _countUp = false; // 是否处于「正计时」（自由计时）模式
+  bool _isRunning = false; // 是否正在计时
+  DateTime? _segmentStart; // 当前运行片段的起点（绝对时间 —— 后台/重启后依然准确）
+  int _elapsedBaseMs = 0; // 已累计的专注毫秒（暂停之前的部分）
+  int _completedCount = 0; // 累计完成的番茄数
+  Timer? _ticker; // UI 刷新定时器（每 250ms）
   String? _pendingNotice; // 待展示的一次性提示（补结算等场景）
+
+  /// 当前这段"专注时间"记在哪个任务名下（在开始计时那一刻绑定，防止中途切任务记错账）
+  String _sessionTaskId = AppStore.defaultTaskId;
 
   // ====================== 生命周期 ======================
 
@@ -801,6 +812,7 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     WidgetsBinding.instance.addObserver(this);
     // 监听全局数据变化（任务切换 / 编辑后同步刷新界面）
     AppStore.instance.addListener(_onStoreChanged);
+    _sessionTaskId = AppStore.instance.activeTaskId;
     _loadState();
   }
 
@@ -813,19 +825,18 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     super.dispose();
   }
 
-  /// 数据仓库变化回调：空闲时把剩余时长限制在新任务的合法范围内
+  /// 数据仓库变化回调：剩余时长由「总时长 - 已用时长」实时推导，这里只需要刷新界面；
+  /// 空闲时如果切了任务，显示也会自动跟随（不会再残留旧任务的剩余时间）。
   void _onStoreChanged() {
-    if (!mounted || _isRunning) return;
-    setState(() {
-      _remainingMs = _remainingMs.clamp(0, _totalMs()).toInt();
-    });
+    if (!mounted) return;
+    setState(() {});
   }
 
   /// App 前后台切换回调
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
-      // 进入后台：若正在计时，给系统排一个"到点闹钟通知"
+      // 进入后台：若正在倒计时，给系统排一个"到点闹钟通知"
       _scheduleBackgroundAlert();
     } else if (state == AppLifecycleState.resumed) {
       // 回到前台：接管计时并校验是否已经到点
@@ -833,39 +844,50 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     }
   }
 
-  // ====================== 派生状态（只读计算） ======================
+  // ====================== 派生状态（全部由"已用时长"实时推导） ======================
 
-  /// 当前任务、当前模式下的总毫秒数
+  /// 已用时长（毫秒）＝ 累计基数 + 当前运行片段（这是统计记账的唯一事实来源）
+  int get _elapsedMs {
+    final DateTime? seg = _segmentStart;
+    if (_isRunning && seg != null) {
+      return _elapsedBaseMs + DateTime.now().difference(seg).inMilliseconds;
+    }
+    return _elapsedBaseMs;
+  }
+
+  /// 当前任务、当前模式下的总毫秒数（仅倒计时使用）
   int _totalMs([PomodoroMode? mode]) => AppStore.instance.minutesOf(mode ?? _mode) * 60 * 1000;
+
+  /// 剩余时长（倒计时用；实际用时超过总时长时收敛为 0，绝不为负）
+  int get _remainingMs {
+    final int r = _totalMs() - _elapsedMs;
+    return r < 0 ? 0 : r;
+  }
 
   /// App 当前是否在前台
   bool get _inForeground =>
       (WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed) == AppLifecycleState.resumed;
 
-  /// 剩余秒数：向上取整（避免数字提前跳变），且永远不会为负
-  int get _remainingSeconds {
-    if (_isRunning && _endTime != null) {
-      final int ms = _endTime!.difference(DateTime.now()).inMilliseconds;
-      if (ms <= 0) return 0;
-      return (ms / 1000).ceil();
-    }
-    if (_remainingMs <= 0) return 0;
-    return (_remainingMs / 1000).ceil();
-  }
+  /// 当前主题色（正计时用品牌绿；倒计时跟随模式色）
+  Color get _themeColor => _countUp ? AppColors.accent : _mode.color;
 
-  /// 圆环进度 = 剩余比例（0.0 ~ 1.0，clamp 保证不会越界）
+  /// 屏幕显示的总秒数：倒计时 = 剩余（向上取整）；正计时 = 已用（向下取整）
+  int get _displaySeconds =>
+      _countUp ? (_elapsedMs ~/ 1000) : ((_remainingMs + 999) ~/ 1000);
+
+  /// 圆环进度：倒计时 = 剩余比例；正计时 = 本小时的进度（走满一圈 = 专注 1 小时）
   double get _progress {
+    if (_countUp) {
+      return (_elapsedMs / 3600000).clamp(0.0, 1.0).toDouble();
+    }
     final int total = _totalMs();
     if (total <= 0) return 0;
-    final int remain = (_isRunning && _endTime != null)
-        ? _endTime!.difference(DateTime.now()).inMilliseconds
-        : _remainingMs;
-    return (remain / total).clamp(0.0, 1.0).toDouble();
+    return (_remainingMs / total).clamp(0.0, 1.0).toDouble();
   }
 
-  /// 时间文本，例如 24:59
+  /// 时间文本，例如 24:59 / 00:15
   String get _timeText {
-    final int s = _remainingSeconds;
+    final int s = _displaySeconds;
     final String m = (s ~/ 60).toString().padLeft(2, '0');
     final String sec = (s % 60).toString().padLeft(2, '0');
     return '$m:$sec';
@@ -873,13 +895,19 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
   /// 状态描述文案
   String get _statusText {
+    if (_countUp) {
+      if (_isRunning) return '自由计时中';
+      if (_elapsedMs > 0) return '已暂停';
+      return '准备开始';
+    }
     if (_isRunning) return _mode == PomodoroMode.work ? '专注中' : '休息中';
-    if (_remainingSeconds < _totalMs() ~/ 1000) return '已暂停';
+    if (_elapsedMs > 0) return '已暂停';
     return '准备开始';
   }
 
   /// 时间下方的小字说明
   String get _subText {
+    if (_countUp) return '自由计时 · 圆环走满=1 小时';
     if (_mode == PomodoroMode.work) return '第 ${_completedCount + 1} 个番茄';
     if (_mode == PomodoroMode.longBreak) return '长休息 · 好好放松';
     return '短休息 · 喝口水吧';
@@ -895,29 +923,32 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
   // ====================== 核心操作 ======================
 
-  /// 开始 / 继续倒计时
+  /// 开始 / 继续计时（倒计时与正计时共用）
   Future<void> _start() async {
     if (_isRunning) return; // 防重复点击
-
-    // 边界保护：剩余为 0（理论上不会出现）时回到完整时长
-    if (_remainingMs <= 0) _remainingMs = _totalMs();
 
     // 首次开始前申请通知 / 精确闹钟权限（只申请一次）
     await _maybeRequestPermissions();
 
-    _endTime = DateTime.now().add(Duration(milliseconds: _remainingMs));
+    // 如果这是一个全新的会话（已用为 0），在此刻绑定当前任务
+    if (_elapsedBaseMs == 0 && _segmentStart == null) {
+      _sessionTaskId = AppStore.instance.activeTaskId;
+    }
+    _segmentStart = DateTime.now();
     _isRunning = true;
     _startTicker();
     await _saveState();
     if (mounted) setState(() {});
   }
 
-  /// 暂停：把"绝对结束时刻"折算回"剩余毫秒"存下来（暂停/恢复不掉秒的关键）
+  /// 暂停：把当前运行片段折算进累计基数（暂停/恢复不掉秒）
   Future<void> _pause() async {
-    if (!_isRunning || _endTime == null) return;
-    // math.max(0, ...) 防止极端情况下出现负数
-    _remainingMs = math.max(0, _endTime!.difference(DateTime.now()).inMilliseconds);
-    _endTime = null;
+    if (!_isRunning) return;
+    final DateTime? seg = _segmentStart;
+    if (seg != null) {
+      _elapsedBaseMs += math.max(0, DateTime.now().difference(seg).inMilliseconds);
+    }
+    _segmentStart = null;
     _isRunning = false;
     _ticker?.cancel();
     _ticker = null;
@@ -926,50 +957,100 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     if (mounted) setState(() {});
   }
 
-  /// 重置：停止计时并恢复为当前任务的完整时长（不会清空累计数据）
+  /// 结束当前会话段：把【实际已用时间】记入统计并从 0 重新起算。
+  /// 运行中调用时会无缝续跑（片段起点重置为此刻）；统计一律按秒表累计的真实用时记账。
+  Future<void> _commitAndClearSession() async {
+    final int elapsed = _elapsedMs;
+    final bool credit = _countUp || _mode == PomodoroMode.work; // 休息时段不记账
+    if (credit && elapsed >= 1000) {
+      await AppStore.instance.addWorkSeconds(_sessionTaskId, (elapsed / 1000).round());
+    }
+    _elapsedBaseMs = 0;
+    _segmentStart = _isRunning ? DateTime.now() : null;
+    _sessionTaskId = AppStore.instance.activeTaskId;
+  }
+
+  /// 重置：停止计时，把已用时间记入统计，回到完整时长（不清空累计数据）
   Future<void> _reset() async {
-    await _commitElapsedWork(); // 中途重置：已专注的时间照样记入统计
+    await _commitAndClearSession(); // 中途重置：已专注的时间照样记入统计
     _ticker?.cancel();
     _ticker = null;
     _isRunning = false;
-    _endTime = null;
-    _remainingMs = _totalMs();
+    _segmentStart = null;
     await NotificationService.instance.cancelTimerEnd();
     await _saveState();
     if (mounted) setState(() {});
   }
 
-  /// 跳过当前时段，直接进入下一时段（不计番茄数，但已专注时间记入统计）
+  /// 跳过当前时段，直接进入下一时段（重载：正计时下 = 结束并记录）
   Future<void> _skip() async {
+    if (_countUp) {
+      await _finishCountUp();
+      return;
+    }
     await _completeSession(skip: true);
   }
 
-  /// 切换模式（仅在未运行时可切换）：停止计时并重置为新模式的完整时长
+  /// 【正计时】结束本次自由计时：记录实际用时并归零（保持正计时模式）
+  Future<void> _finishCountUp() async {
+    final int elapsed = _elapsedMs;
+    _ticker?.cancel();
+    _ticker = null;
+    _isRunning = false;
+    _elapsedBaseMs = 0;
+    _segmentStart = null;
+    await NotificationService.instance.cancelTimerEnd();
+    if (elapsed >= 1000) {
+      final int secs = (elapsed / 1000).round();
+      await AppStore.instance.addWorkSeconds(_sessionTaskId, secs);
+      _pendingNotice = '已记录自由计时 ${formatDuration(secs)}';
+    }
+    _sessionTaskId = AppStore.instance.activeTaskId;
+    await _saveState();
+    if (mounted) setState(() {});
+    _flushPendingNotice();
+  }
+
+  /// 切换到某个倒计时模式（仅在未运行时）
   Future<void> _switchMode(PomodoroMode mode) async {
-    if (_isRunning || mode == _mode) return;
-    await _commitElapsedWork(); // 先把当前时段已用的时间记账
+    if (_isRunning || (_mode == mode && !_countUp)) return;
+    await _commitAndClearSession(); // 先把已用的时间记账（若在正计时里切换，同样先入账）
     setState(() {
       _mode = mode;
-      _remainingMs = _totalMs(mode);
-      _endTime = null;
+      _countUp = false;
+      _segmentStart = null;
+      _elapsedBaseMs = 0;
     });
     await NotificationService.instance.cancelTimerEnd();
     await _saveState();
   }
 
-  /// 切换当前任务：先给旧任务结算已用时间，再套用新任务的番茄钟参数
+  /// 切换到「正计时 / 自由计时」（不限时长，正着数，结束/重置时按实际用时记账）
+  Future<void> _switchToCountUp() async {
+    if (_isRunning || _countUp) return;
+    await _commitAndClearSession();
+    setState(() {
+      _countUp = true;
+      _segmentStart = null;
+      _elapsedBaseMs = 0;
+    });
+    await NotificationService.instance.cancelTimerEnd();
+    await _saveState();
+  }
+
+  /// 切换当前任务：先给"这次会话所属的任务"结算已用时间，再切换到新任务
   Future<void> _applyTask(String taskId) async {
     final AppStore store = AppStore.instance;
     if (taskId == store.activeTaskId) return;
-    await _commitElapsedWork();
+    await _commitAndClearSession();
     await store.setActiveTask(taskId);
     if (!mounted) return;
     setState(() {
       _ticker?.cancel();
       _ticker = null;
       _isRunning = false;
-      _endTime = null;
-      _remainingMs = _totalMs(); // 重置为"新任务 + 当前模式"的完整时长
+      _segmentStart = null;
+      _elapsedBaseMs = 0;
     });
     await NotificationService.instance.cancelTimerEnd();
     await _saveState();
@@ -977,13 +1058,13 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
   // ====================== 计时与结算 ======================
 
-  /// 启动 UI 刷新定时器（每 250ms 刷新一次数字与圆环，兼顾流畅与省电）
+  /// 启动 UI 刷新定时器（每 250ms 刷新一次数字与圆环）
   void _startTicker() {
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (!_isRunning || _endTime == null) return;
-      if (!DateTime.now().isBefore(_endTime!)) {
-        // 到点：结算（先停定时器再由结算逻辑统一处理）
+      if (!_isRunning) return;
+      if (!_countUp && _remainingMs <= 0) {
+        // 倒计时到点：结算
         _completeSession();
       } else if (mounted) {
         setState(() {}); // 刷新 UI
@@ -991,42 +1072,39 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     });
   }
 
-  /// 把当前"工作"时段已经用掉的时间记入统计（幂等：结算后剩余时间会被重置，
-  /// 因此重复调用不会重复记账；休息时段不计数）。
-  Future<void> _commitElapsedWork() async {
-    if (_mode != PomodoroMode.work) return;
-    final int total = _totalMs();
-    final int remain = (_isRunning && _endTime != null)
-        ? math.max(0, _endTime!.difference(DateTime.now()).inMilliseconds)
-        : math.max(0, _remainingMs);
-    final int elapsed = (total - remain).clamp(0, total);
-    if (elapsed < 1000) return; // 不足 1 秒忽略
-    await AppStore.instance.addWorkSeconds(AppStore.instance.activeTaskId, (elapsed / 1000).round());
-  }
-
-  /// 结算一个时段：
-  ///   · [skip] = true  ：用户主动跳过，不计番茄数（已用时间仍入统计）
-  ///   · 前台完成：撤销后台通知，震动 + 铃声 + 弹窗
-  ///   · 后台完成：只切换状态并记一条待提示消息（提醒由系统通知负责）
-  ///   · silent 补结算：App 重启后发现计时已在后台到点，静默补记账
+  /// 结算一个（倒计时）时段：
+  ///   · 记账规则：无论"完成"还是"跳过/中断"，一律按【实际用时】计入统计（休息时段不计）；
+  ///   · [skip] = true  ：用户主动跳过，不计番茄数；
+  ///   · 前台完成：撤销后台通知，震动 + 铃声 + 弹窗；
+  ///   · 后台完成：只切换状态并记一条待提示消息（提醒由系统通知负责）；
+  ///   · silent 补结算：App 重启后发现计时已在后台到点，静默补记账。
   Future<void> _completeSession({bool skip = false, bool silent = false}) async {
+    if (_countUp) {
+      // 正计时不会"到点"，保险起见按手动结束处理
+      await _finishCountUp();
+      return;
+    }
     final PomodoroMode finished = _mode;
-
-    await _commitElapsedWork(); // ① 先把已专注时间记入当前任务的统计
+    final int elapsed = _elapsedMs;
 
     _ticker?.cancel();
     _ticker = null;
     _isRunning = false;
-    _endTime = null;
-    _remainingMs = 0;
+    _segmentStart = null;
+    _elapsedBaseMs = 0;
 
-    // 只有"工作"时段计为一个番茄（跳过的不算）
+    // 实际用时记入统计（完成 / 跳过都按真实用时，杜绝"虚拟时长"）
+    if (finished == PomodoroMode.work && elapsed >= 1000) {
+      await AppStore.instance.addWorkSeconds(_sessionTaskId, (elapsed / 1000).round());
+    }
+    _sessionTaskId = AppStore.instance.activeTaskId;
+
+    // 只有完整完成"工作"时段才计为一个番茄（跳过的不算）
     if (!skip && finished == PomodoroMode.work) _completedCount += 1;
 
     // 切换到下一时段：工作 → 休息（每 4 个番茄一次长休息）；休息 → 工作
     final PomodoroMode next = _nextMode(finished);
     _mode = next;
-    _remainingMs = _totalMs();
 
     if (!skip && !silent && _inForeground) {
       // 前台完成：撤销后台通知（避免双重提醒），用应用内的铃声 + 震动提醒
@@ -1118,20 +1196,22 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
         PomodoroMode.longBreak => ('🌿 长休息结束', '开始新的一轮吧'),
       };
 
-  /// 进入后台时：为运行中的计时注册系统闹钟通知
+  /// 进入后台时：为运行中的【倒计时】注册系统闹钟通知（正计时没有"到点"，无需闹钟）
   void _scheduleBackgroundAlert() {
-    final DateTime? end = _endTime;
-    if (!_isRunning || end == null) return;
+    if (!_isRunning || _countUp) return;
+    final int remain = _remainingMs;
+    if (remain <= 0) return;
+    final DateTime end = DateTime.now().add(Duration(milliseconds: remain));
     final (String title, String body) = _notificationText(_mode);
     unawaited(NotificationService.instance.scheduleTimerEnd(end, title: title, body: body));
   }
 
   /// 回到前台时：
   ///   1. 撤销后台闹钟（前台由 App 自己提醒，避免重复）；
-  ///   2. 若在后台期间已经到点（且定时器没来得及结算），静默补结算。
+  ///   2. 若倒计时在后台期间已经到点（且定时器没来得及结算），静默补结算。
   Future<void> _handleResume() async {
     await NotificationService.instance.cancelTimerEnd();
-    if (_isRunning && _endTime != null && !DateTime.now().isBefore(_endTime!)) {
+    if (!_countUp && _isRunning && _remainingMs <= 0) {
       // 到点提醒此前已由系统通知完成，这里静默结算即可
       await _completeSession(silent: true);
     }
@@ -1146,9 +1226,10 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     if (p == null) return;
     await p.setInt(_kCompletedCount, _completedCount);
     await p.setInt(_kMode, _mode.index);
+    await p.setBool(_kCountUp, _countUp);
     await p.setBool(_kRunning, _isRunning);
-    await p.setInt(_kEndMs, _endTime?.millisecondsSinceEpoch ?? 0);
-    await p.setInt(_kRemainingMs, _remainingMs);
+    await p.setInt(_kSegmentStart, _segmentStart?.millisecondsSinceEpoch ?? 0);
+    await p.setInt(_kElapsedBase, _elapsedBaseMs);
   }
 
   /// 读取本地状态并恢复现场（重启 App / 进程被杀后进入此流程）
@@ -1160,28 +1241,35 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
     _completedCount = p.getInt(_kCompletedCount) ?? 0;
     final int modeIndex = (p.getInt(_kMode) ?? 0).clamp(0, PomodoroMode.values.length - 1).toInt();
     _mode = PomodoroMode.values[modeIndex];
-    // 剩余时间限制在 [0, 总时长] 内，防止任务/时长变更后出现越界
-    _remainingMs = (p.getInt(_kRemainingMs) ?? _totalMs()).clamp(0, _totalMs()).toInt();
+    _countUp = p.getBool(_kCountUp) ?? false;
+    _elapsedBaseMs = math.max(0, p.getInt(_kElapsedBase) ?? 0);
 
-    // 恢复"运行中"的计时
     final bool savedRunning = p.getBool(_kRunning) ?? false;
-    final int endMs = p.getInt(_kEndMs) ?? 0;
-    if (savedRunning && endMs > 0) {
-      final DateTime end = DateTime.fromMillisecondsSinceEpoch(endMs);
-      if (end.isAfter(DateTime.now())) {
-        // 情况 A：上次退出时还在计时、且尚未到点 → 原样恢复，继续倒计时
-        _endTime = end;
-        _isRunning = true;
-        _remainingMs = end.difference(DateTime.now()).inMilliseconds;
-        _startTicker();
-        // 进程重启会清掉之前注册的系统闹钟，这里补注册一次
+    final int segMs = p.getInt(_kSegmentStart) ?? 0;
+    if (savedRunning && segMs > 0) {
+      // 上次退出时正在计时 → 用绝对时间点恢复（与进程生死无关，时间继续走）
+      _segmentStart = DateTime.fromMillisecondsSinceEpoch(segMs);
+      _isRunning = true;
+      _startTicker();
+      if (!_countUp && _remainingMs <= 0) {
+        // 倒计时已在 App 未运行期间到点 → 静默补结算（补记时长、切换模式）
+        await _completeSession(silent: true);
+      } else if (!_countUp) {
+        // 进程重启会清掉之前的系统闹钟，这里按剩余时间补注册一次
+        final DateTime end = DateTime.now().add(Duration(milliseconds: _remainingMs));
         final (String title, String body) = _notificationText(_mode);
         unawaited(NotificationService.instance.scheduleTimerEnd(end, title: title, body: body));
-      } else {
-        // 情况 B：计时在 App 未运行期间已到点 → 静默补结算（补记时长、切换模式）
-        await _completeSession(silent: true);
       }
+    } else {
+      // 未运行（空闲/暂停中）：收敛异常数据
+      if (!_countUp) {
+        final int total = _totalMs();
+        if (_elapsedBaseMs > total) _elapsedBaseMs = total; // 倒计时的已用不应超过总时长
+      }
+      _isRunning = false;
+      _segmentStart = null;
     }
+    _sessionTaskId = store.activeTaskId;
 
     if (mounted) setState(() => _loading = false);
     _flushPendingNotice();
@@ -1346,19 +1434,19 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
       return v;
     }
 
-    await _commitElapsedWork(); // 时长变更前把已用时间记账
+    await _commitAndClearSession(); // 时长变更前：已用时间先记账，再从 0 开始
     await store.setActiveDurations(
       work: parse(raw[PomodoroMode.work]!, store.minutesOf(PomodoroMode.work)),
       shortBreak: parse(raw[PomodoroMode.shortBreak]!, store.minutesOf(PomodoroMode.shortBreak)),
       longBreak: parse(raw[PomodoroMode.longBreak]!, store.minutesOf(PomodoroMode.longBreak)),
     );
     setState(() {
-      // 时长变更后停止当前计时并重置为新时长，避免"剩余时间 > 总时长"的错乱
+      // 时长变更后停止当前计时并重置，避免"剩余时间 > 总时长"的错乱
       _ticker?.cancel();
       _ticker = null;
       _isRunning = false;
-      _endTime = null;
-      _remainingMs = _totalMs();
+      _segmentStart = null;
+      _elapsedBaseMs = 0;
     });
     await NotificationService.instance.cancelTimerEnd();
     await _saveState();
@@ -1403,7 +1491,7 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
       return const Center(child: CircularProgressIndicator());
     }
 
-    final Color color = _mode.color;
+    final Color color = _themeColor;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 450),
       curve: Curves.easeOut,
@@ -1428,8 +1516,14 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
               ),
             ),
 
-            // ---- 模式分段控件（运行中禁止切换，防止误触） ----
-            _ModeSelector(current: _mode, enabled: !_isRunning, onChanged: _switchMode),
+            // ---- 计时模式栏：工作 / 短休息 / 长休息 / 正计时 ----
+            _TimerModeBar(
+              mode: _mode,
+              countUp: _countUp,
+              enabled: !_isRunning,
+              onModeChanged: _switchMode,
+              onCountUp: _switchToCountUp,
+            ),
 
             // ---- 当前任务胶囊（点击切换任务） ----
             GestureDetector(
@@ -1478,10 +1572,12 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
 
             const SizedBox(height: 20),
 
-            // ---- 控制按钮：重置 / 开始-暂停 / 跳过 ----
+            // ---- 控制按钮：重置 / 开始-暂停 / 跳过（正计时时右侧为"结束"） ----
             _Controls(
               running: _isRunning,
               color: color,
+              rightLabel: _countUp ? '结束' : '跳过',
+              rightIcon: _countUp ? Icons.stop_rounded : Icons.skip_next_rounded,
               onReset: _reset,
               onToggle: _isRunning ? _pause : _start,
               onSkip: _skip,
@@ -2348,27 +2444,35 @@ class _PageHeader extends StatelessWidget {
   }
 }
 
-/// iOS 风格分段控件：在三种模式之间切换
-class _ModeSelector extends StatelessWidget {
-  const _ModeSelector({
-    required this.current,
+/// 计时模式栏：工作 / 短休息 / 长休息 / 正计时（四段式，Apple 分段控件风格）
+class _TimerModeBar extends StatelessWidget {
+  const _TimerModeBar({
+    required this.mode,
+    required this.countUp,
     required this.enabled,
-    required this.onChanged,
+    required this.onModeChanged,
+    required this.onCountUp,
   });
 
-  /// 当前选中模式
-  final PomodoroMode current;
+  /// 当前倒计时模式
+  final PomodoroMode mode;
 
-  /// 是否允许切换（计时运行中为 false）
+  /// 是否处于正计时（自由计时）
+  final bool countUp;
+
+  /// 是否允许切换（计时运行中为 false，防止误触）
   final bool enabled;
 
-  /// 切换回调
-  final ValueChanged<PomodoroMode> onChanged;
+  /// 切换到某个倒计时模式
+  final ValueChanged<PomodoroMode> onModeChanged;
+
+  /// 切换到正计时
+  final VoidCallback onCountUp;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      margin: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.05),
@@ -2376,41 +2480,47 @@ class _ModeSelector extends StatelessWidget {
       ),
       child: Row(
         children: <Widget>[
-          for (final PomodoroMode mode in PomodoroMode.values)
-            Expanded(
-              child: GestureDetector(
-                onTap: enabled ? () => onChanged(mode) : null,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOut,
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    // 选中的一项浮起为白色卡片（iOS 分段控件特征）
-                    color: mode == current ? Colors.white : Colors.transparent,
-                    borderRadius: BorderRadius.circular(9),
-                    boxShadow: mode == current
-                        ? <BoxShadow>[
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.08),
-                              blurRadius: 8,
-                              offset: const Offset(0, 2),
-                            ),
-                          ]
-                        : null,
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    mode.label,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: mode == current ? FontWeight.w600 : FontWeight.w500,
-                      color: mode == current ? mode.color : AppColors.secondaryLabel,
-                    ),
-                  ),
-                ),
-              ),
-            ),
+          for (final PomodoroMode m in PomodoroMode.values)
+            _item(m.label, m.color, !countUp && mode == m, () => onModeChanged(m)),
+          _item('正计时', AppColors.accent, countUp, onCountUp),
         ],
+      ),
+    );
+  }
+
+  /// 单个分段
+  Widget _item(String label, Color color, bool selected, VoidCallback onTap) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: enabled ? onTap : null,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            // 选中的一项浮起为白色卡片（iOS 分段控件特征）
+            color: selected ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+            boxShadow: selected
+                ? <BoxShadow>[
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.08),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              color: selected ? color : AppColors.secondaryLabel,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -2573,11 +2683,13 @@ class _StatsBar extends StatelessWidget {
   }
 }
 
-/// 底部控制区：重置 / 开始-暂停（大按钮）/ 跳过
+/// 底部控制区：重置 / 开始-暂停（大按钮）/ 跳过（正计时下显示为"结束"）
 class _Controls extends StatelessWidget {
   const _Controls({
     required this.running,
     required this.color,
+    required this.rightLabel,
+    required this.rightIcon,
     required this.onReset,
     required this.onToggle,
     required this.onSkip,
@@ -2588,6 +2700,12 @@ class _Controls extends StatelessWidget {
 
   /// 主题色
   final Color color;
+
+  /// 右侧按钮文案：倒计时 = 跳过；正计时 = 结束
+  final String rightLabel;
+
+  /// 右侧按钮图标
+  final IconData rightIcon;
 
   final VoidCallback onReset;
   final VoidCallback onToggle;
@@ -2633,10 +2751,10 @@ class _Controls extends StatelessWidget {
           ),
         ),
 
-        // 次级按钮：跳过
+        // 次级按钮：跳过（倒计时）/ 结束（正计时）
         _CircleButton(
-          icon: Icons.skip_next_rounded,
-          label: '跳过',
+          icon: rightIcon,
+          label: rightLabel,
           size: 58,
           onTap: onSkip,
         ),
