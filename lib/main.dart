@@ -33,6 +33,11 @@
 //   · 弹窗布局 Bug：自定义卡片缺少「居中 + 收缩」容器，会被拉伸为整屏白板
 //     （表现为弹窗下方大片留白）——改用 Material Dialog 作为外层容器，
 //     自动垂直居中、收缩到内容大小、并在键盘弹出时避让。
+//
+// v1.4.3 修复：
+//   · 切换「倒计时 / 正计时」时弹窗垂直尺寸跳动——正计时提示文案较长会折成两行，
+//     现将提示区固定为两行高度，两种状态占位一致；灰化切换同步改为平滑过渡。
+
 
 
 // -----------------------------------------------------------------------------
@@ -1531,14 +1536,23 @@ class _PomodoroPageState extends State<PomodoroPage> with WidgetsBindingObserver
                   onChanged: (int i) => setLocal(() => countUpChoice = i == 1),
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  countUpChoice ? '正计时不限时长，结束时按实际用时记账' : '倒计时使用下面的三段时长（分钟）',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
+                // 固定两行高度：切换计时方式时弹窗整体尺寸保持不变（不跳动）
+                SizedBox(
+                  height: 36,
+                  child: Center(
+                    child: Text(
+                      countUpChoice ? '正计时不限时长，结束时按实际用时记账' : '倒计时使用下面的三段时长（分钟）',
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 14),
                 // 三段时长（正计时任务置灰不可编辑，仅保留配置备用）
-                Opacity(
+                AnimatedOpacity(
+                  duration: const Duration(milliseconds: 200),
                   opacity: countUpChoice ? 0.35 : 1,
                   child: IgnorePointer(
                     ignoring: countUpChoice,
@@ -1925,16 +1939,25 @@ class TasksPage extends StatelessWidget {
                   onChanged: (int i) => setLocal(() => countUpChoice = i == 1),
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  countUpChoice
-                      ? '正计时不限时长：打开该任务后正着数，结束时按实际用时记账'
-                      : '倒计时使用下面的三段时长（分钟）',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
+                // 固定两行高度：切换计时方式时弹窗整体尺寸保持不变（不跳动）
+                SizedBox(
+                  height: 36,
+                  child: Center(
+                    child: Text(
+                      countUpChoice
+                          ? '正计时不限时长：打开该任务后正着数，结束时按实际用时记账'
+                          : '倒计时使用下面的三段时长（分钟）',
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, color: AppColors.secondaryLabel),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 14),
                 // 三段时长（正计时任务置灰不可编辑，仅保留配置备用）
-                Opacity(
+                AnimatedOpacity(
+                  duration: const Duration(milliseconds: 200),
                   opacity: countUpChoice ? 0.35 : 1,
                   child: IgnorePointer(
                     ignoring: countUpChoice,
